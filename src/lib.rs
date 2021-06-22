@@ -15,8 +15,8 @@
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![deny(missing_docs)]
 #![deny(clippy::all)]
-#![feature(option_expect_none, option_unwrap_none, map_first_last)]
-#![cfg_attr(test, feature(slice_fill, vec_into_raw_parts))]
+#![feature(map_first_last)]
+#![cfg_attr(test, feature(vec_into_raw_parts))]
 
 use core::borrow::{Borrow, BorrowMut};
 use core::cell::UnsafeCell;
@@ -698,7 +698,7 @@ where
             }
         };
 
-        unsafe { pool.reclaim_slice_inner(&self) }
+        unsafe { pool.reclaim_slice_inner(self) }
     }
 }
 impl<'pool, I, H, E, G, C> ops::Deref for BufferSlice<'pool, I, H, E, G, C>
@@ -849,12 +849,14 @@ where
         let mut occ_write_guard = self.pool.occ_map.write();
         let mut free_write_guard = self.pool.free_map.write();
 
-        occ_write_guard
-            .insert(
-                OccOffset::from_offset_used(self.offset(), false),
-                Size(self.len()),
-            )
-            .expect_none("expected newly-acquired slice not to conflict with any existing one");
+        let old_occ_opt = occ_write_guard.insert(
+            OccOffset::from_offset_used(self.offset(), false),
+            Size(self.len()),
+        );
+        assert_eq!(
+            old_occ_opt, None,
+            "expected newly-acquired slice not to conflict with any existing one"
+        );
 
         let updated =
             free_write_guard.insert(FreeEntry::from_size_offset(self.len(), self.offset()));
@@ -1021,7 +1023,7 @@ where
         }
 
         let handle = self.handle.take();
-        let mmap_map = mem::replace(self.mmap_map.get_mut(), BTreeMap::new());
+        let mmap_map = mem::take(self.mmap_map.get_mut());
         let entries = MmapEntries {
             inner: mmap_map.into_iter(),
         };
@@ -1272,9 +1274,11 @@ where
             let new_offset = aligned_off;
             let new_occ_k = OccOffset::from_offset_used(new_offset, true);
             let new_occ_v = Size(len);
-            occ_write_guard
-                .insert(new_occ_k, new_occ_v)
-                .expect_none("expected new entry not to already be inserted");
+            let old_occ_opt = occ_write_guard.insert(new_occ_k, new_occ_v);
+            assert_eq!(
+                old_occ_opt, None,
+                "expected new entry not to already be inserted"
+            );
 
             new_offset
         };
@@ -1606,7 +1610,8 @@ where
             self.guarded_occ_count.fetch_sub(1, Ordering::Release);
         }
 
-        occ_write_guard.insert(new_occ_k, new_occ_v).unwrap_none();
+        let old_occ_opt = occ_write_guard.insert(new_occ_k, new_occ_v);
+        assert_eq!(old_occ_opt, None);
     }
     fn drop_impl(&mut self) {
         let count = self.guarded_occ_count.load(Ordering::Acquire);
@@ -1614,7 +1619,7 @@ where
         if count == 0 {
             if let Some(h) = self.handle.take() {
                 // This won't allocate, since the new mmap is entry.
-                let entries = mem::replace(self.mmap_map.get_mut(), BTreeMap::new());
+                let entries = mem::take(self.mmap_map.get_mut());
                 let _ = h.close_all(MmapEntries {
                     inner: entries.into_iter(),
                 });
@@ -1996,8 +2001,8 @@ mod tests {
 
                 for _ in 0..N {
                     'retry: loop {
-                        let len = thread_rng.gen_range(64, 4096);
-                        let align = 1 << thread_rng.gen_range(0, 3);
+                        let len = thread_rng.gen_range(64..4096);
+                        let align = 1 << thread_rng.gen_range(0..3);
                         match pool.acquire_borrowed_slice::<marker::NoGuard>(len, align, strategy) {
                             Some(_) => break 'retry,
                             None => continue 'retry,
@@ -2105,11 +2110,11 @@ mod tests {
         const N: usize = 1000;
 
         for _ in 0..N {
-            let alignment = 1 << thread_rng.gen_range(0, 3);
-            let unaligned_offset = thread_rng.gen_range(0, 2048 - alignment);
+            let alignment = 1 << thread_rng.gen_range(0..3);
+            let unaligned_offset = thread_rng.gen_range(0..2048 - alignment);
             let offset = (unaligned_offset + alignment - 1) / alignment * alignment;
 
-            let len = thread_rng.gen_range(0, 2048 - offset);
+            let len = thread_rng.gen_range(0..2048 - offset);
 
             if len == 0 {
                 continue;
