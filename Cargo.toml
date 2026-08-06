@@ -1,8 +1,8 @@
 [package]
 name = "redox-buffer-pool"
-version = "0.5.2"
+version = "0.6.0"
 authors = ["4lDO2 <4lDO2@protonmail.com>"]
-edition = "2018"
+edition = "2024"
 description = "A buffer pool library for Redox, featuring a general-purpose 32-bit allocator"
 documentation = "https://docs.rs/redox-buffer-pool"
 readme = "README.md"
@@ -15,16 +15,16 @@ exclude = ["target"]
 
 [features]
 default = ["std"]
-std = ["parking_lot"]
+std = ["parking_lot", "guard-trait/default", "log/std", "spinning?/default"]
 redox = ["redox_syscall"]
 
 [dependencies]
-guard-trait = "0.4"
-log = "0.4"
-parking_lot = { version = "0.11", features = ["nightly"], optional = true }
-spinning = { version = "0.1", optional = true }
-redox_syscall = { version = "0.2", optional = true }
+guard-trait = { version = "0.4", default-features = false }
+log = { version = "0.4", default-features = false }
+parking_lot = { version = "0.12", features = ["nightly"], optional = true }
+spinning = { version = "0.1", default-features = false, optional = true }
+redox_syscall = { version = "0.9", optional = true }
 
 [dev-dependencies]
-rand = "0.8"
-parking_lot = { version = "0.11", features = ["nightly"] }
+rand = { version = "0.10", features = ["thread_rng"] }
+parking_lot = { version = "0.12", features = ["nightly"] }
