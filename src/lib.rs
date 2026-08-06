@@ -15,8 +15,6 @@
 #![cfg_attr(not(any(feature = "std", test)), no_std)]
 #![deny(missing_docs)]
 #![deny(clippy::all)]
-#![feature(map_first_last)]
-#![cfg_attr(test, feature(vec_into_raw_parts))]
 
 use core::borrow::{Borrow, BorrowMut};
 use core::cell::UnsafeCell;
@@ -395,7 +393,7 @@ impl<I: Integer> Default for BufferPoolOptions<I> {
 /// A buffer pool, featuring a general-purpose 32-bit allocator, and slice guards.
 // TODO: Expand doc
 #[derive(Debug)]
-pub struct BufferPool<I, H, E>
+pub struct BufferPool<'pool, I, H, E>
 where
     I: Integer,
     H: Handle<I, E>,
@@ -422,15 +420,17 @@ where
     // are general-purpose larger allocations that this buffer pool builds on. Hence, these can
     // also be io_uring "pool" shared memory or physalloc+physmap DMA allocations.
     mmap_map: RwLock<BTreeMap<Offset<I>, MmapInfo<I, E>>>,
+
+    _marker: PhantomData<&'pool ()>,
 }
-unsafe impl<I, H, E> Send for BufferPool<I, H, E>
+unsafe impl<'pool, I, H, E> Send for BufferPool<'pool, I, H, E>
 where
     I: Integer + Send,
     H: Handle<I, E> + Send,
     E: Copy + Send,
 {
 }
-unsafe impl<I, H, E> Sync for BufferPool<I, H, E>
+unsafe impl<'pool, I, H, E> Sync for BufferPool<'pool, I, H, E>
 where
     I: Integer + Sync,
     H: Handle<I, E> + Sync,
@@ -461,34 +461,34 @@ where
 ///
 /// This trait is automatically implemented for all types that implement [`AsRef<BufferPool>`], so
 /// prefer that instead.
-pub trait AsBufferPool<I, H, E>
+pub trait AsBufferPool<'pool, I, H, E>
 where
     I: Integer,
     H: Handle<I, E>,
     E: Copy,
 {
     /// Get a reference to the buffer pool that must be contained within the wrapper.
-    fn as_buffer_pool(&self) -> &BufferPool<I, H, E>;
+    fn as_buffer_pool(&self) -> &BufferPool<'pool, I, H, E>;
 }
 
-impl<I, H, E> AsBufferPool<I, H, E> for BufferPool<I, H, E>
+impl<'pool, I, H, E> AsBufferPool<'pool, I, H, E> for BufferPool<'pool, I, H, E>
 where
     I: Integer,
     H: Handle<I, E>,
     E: Copy,
 {
-    fn as_buffer_pool(&self) -> &BufferPool<I, H, E> {
+    fn as_buffer_pool(&self) -> &BufferPool<'pool, I, H, E> {
         self
     }
 }
-impl<T, I, H, E> AsBufferPool<I, H, E> for T
+impl<'pool, T, I, H, E> AsBufferPool<'pool, I, H, E> for T
 where
     I: Integer,
     H: Handle<I, E>,
     E: Copy,
-    T: AsRef<BufferPool<I, H, E>>,
+    T: AsRef<BufferPool<'pool, I, H, E>>,
 {
-    fn as_buffer_pool(&self) -> &BufferPool<I, H, E> {
+    fn as_buffer_pool(&self) -> &BufferPool<'pool, I, H, E> {
         self.as_ref()
     }
 }
@@ -520,13 +520,13 @@ where
 /// [`acquire_strong_slice`]: ./struct.BufferPool.html#method.acquire_strong_slice
 /// [`acquire_weak_slice`]: ./struct.BufferPool.html#method.acquire_weak_slice
 #[derive(Debug)]
-pub struct BufferSlice<'pool, I, H, E, G = marker::NoGuard, C = BufferPool<I, H, E>>
+pub struct BufferSlice<'pool, I, H, E, G = marker::NoGuard, C = BufferPool<'pool, I, H, E>>
 where
     I: Integer,
     H: Handle<I, E>,
     E: Copy,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     //
     // TODO: Support mutable/immutable slices, maybe even with refcounts? A refcount of 1 would mean
@@ -548,8 +548,8 @@ where
 }
 
 #[derive(Debug)]
-enum PoolRefKind<'pool, I: Integer, H: Handle<I, E>, E: Copy, C: AsBufferPool<I, H, E>> {
-    Ref(&'pool BufferPool<I, H, E>),
+enum PoolRefKind<'pool, I: Integer, H: Handle<I, E>, E: Copy, C: AsBufferPool<'pool, I, H, E>> {
+    Ref(&'pool BufferPool<'pool, I, H, E>),
     Strong(Arc<C>),
     Weak(Weak<C>),
 }
@@ -558,7 +558,7 @@ where
     I: Integer,
     H: Handle<I, E>,
     E: Copy,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     fn clone(&self) -> Self {
         match *self {
@@ -575,7 +575,7 @@ where
     H: Handle<I, E> + Send + Sync,
     E: Copy + Send,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
 }
 unsafe impl<'pool, I, H, E, G, C> Sync for BufferSlice<'pool, I, H, E, G, C>
@@ -584,7 +584,7 @@ where
     H: Send + Sync + Handle<I, E>,
     E: Copy + Sync,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
 }
 // TODO: Unpin, UnwindSafe, RefUnwindSafe
@@ -595,7 +595,7 @@ where
     H: Handle<I, E>,
     E: Copy,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     /// Checks whether the pool that owns this slice is still alive, or if it has dropped. Note
     /// that this only makes sense for weak buffer slices, since buffer slices tied to a lifetime
@@ -678,7 +678,7 @@ where
     E: Copy,
     H: Handle<I, E>,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     fn drop(&mut self) {
         let arc;
@@ -707,7 +707,7 @@ where
     H: Handle<I, E>,
     E: Copy,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     type Target = [u8];
 
@@ -721,7 +721,7 @@ where
     H: Handle<I, E>,
     E: Copy,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     fn deref_mut(&mut self) -> &mut Self::Target {
         self.as_slice_mut()
@@ -733,7 +733,7 @@ where
     H: Handle<I, E>,
     E: Copy,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     fn borrow(&self) -> &[u8] {
         self.as_slice()
@@ -745,7 +745,7 @@ where
     H: Handle<I, E>,
     E: Copy,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     fn borrow_mut(&mut self) -> &mut [u8] {
         self.as_slice_mut()
@@ -757,7 +757,7 @@ where
     H: Handle<I, E>,
     E: Copy,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     fn as_ref(&self) -> &[u8] {
         self.as_slice()
@@ -769,7 +769,7 @@ where
     H: Handle<I, E>,
     E: Copy,
     G: marker::Marker,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     fn as_mut(&mut self) -> &mut [u8] {
         self.as_slice_mut()
@@ -785,7 +785,7 @@ where
 {
     offset: I,
     len: I,
-    pool: &'pool BufferPool<I, H, E>,
+    pool: &'pool BufferPool<'pool, I, H, E>,
 }
 impl<'pool, I, H, E> ExpansionHandle<'pool, I, H, E>
 where
@@ -830,7 +830,9 @@ where
             // guarantee that we have exclusive ownership to this handle, since it's stored openly
             // together with every other mmap entry, we can however guarantee that readers will not
             // unsafely access this field, without having read the pointer that wasn't null.
-            ptr::write(value.extra.get(), MaybeUninit::new(extra));
+            unsafe {
+                ptr::write(value.extra.get(), MaybeUninit::new(extra));
+            }
 
             // Store the pointer that we just specified, into the addr field of the mmap entry. This
             // will transition the mmap entry from the state "pending" into the state "ready", which is
@@ -909,10 +911,10 @@ impl<I> Default for AllocationStrategy<I> {
 type AcquireSliceRet<I, E> = (ops::Range<I>, I, ops::Range<I>, *mut u8, E);
 
 /// The result originating from [`BufferPool::try_close`].
-pub type CloseResult<I, H, E> =
-    Result<(Option<H>, MmapEntries<I, E>), CloseError<BufferPool<I, H, E>>>;
+pub type CloseResult<'pool, I, H, E> =
+    Result<(Option<H>, MmapEntries<I, E>), CloseError<BufferPool<'pool, I, H, E>>>;
 
-impl<I, H, E> BufferPool<I, H, E>
+impl<'pool, I, H, E> BufferPool<'pool, I, H, E>
 where
     I: Integer,
     H: Handle<I, E>,
@@ -1014,7 +1016,7 @@ where
     ///
     /// If there are any pending commands that have guarded buffer slices from this pool, the
     /// entire memory will be leaked, for now.
-    pub fn try_close(mut self) -> CloseResult<I, H, E> {
+    pub fn try_close(mut self) -> CloseResult<'pool, I, H, E> {
         if self.guarded_occ_count.load(Ordering::Acquire) > 0 {
             // TODO: Free as much memory as possible when this happens, rather than the entire
             // pool. This may add unnecessary overhead though, if a separate guard count would be
@@ -1040,6 +1042,7 @@ where
             guarded_occ_count: AtomicUsize::new(0),
             handle,
             options: BufferPoolOptions::default(),
+            _marker: PhantomData,
         }
     }
     /// Set the allocation options used by the buffer pool, e.g. the size and alignment bounds.
@@ -1343,14 +1346,14 @@ where
 
         Some((offset..offset + actual_len, len, mmap_range, pointer, extra))
     }
-    fn construct_buffer_slice<G: marker::Marker, C: AsBufferPool<I, H, E>>(
+    fn construct_buffer_slice<'a, G: marker::Marker, C: AsBufferPool<'a, I, H, E>>(
         alloc_range: ops::Range<I>,
         alloc_len: I,
         mmap_range: ops::Range<I>,
         pointer: *mut u8,
         extra: E,
-        pool: PoolRefKind<I, H, E, C>,
-    ) -> BufferSlice<'_, I, H, E, G, C> {
+        pool: PoolRefKind<'a, I, H, E, C>,
+    ) -> BufferSlice<'a, I, H, E, G, C> {
         debug_assert!(alloc_len <= alloc_range.end - alloc_range.start);
 
         BufferSlice {
@@ -1372,11 +1375,11 @@ where
     /// and the pool will not be able to use the offset, as it will be marked "occpied" and nothing
     /// will free it.
     pub fn acquire_borrowed_slice<G>(
-        &self,
+        &'pool self,
         len: I,
         alignment: I,
         strategy: AllocationStrategy<I>,
-    ) -> Option<BufferSlice<'_, I, H, E, G>>
+    ) -> Option<BufferSlice<'pool, I, H, E, G>>
     where
         G: marker::Marker,
     {
@@ -1407,7 +1410,7 @@ where
     ) -> Option<BufferSlice<'static, I, H, E, G, C>>
     where
         G: marker::Marker,
-        C: AsBufferPool<I, H, E>,
+        C: AsBufferPool<'static, I, H, E>,
     {
         let (alloc_range, alloc_len, mmap_range, pointer, extra) = this
             .as_buffer_pool()
@@ -1436,7 +1439,7 @@ where
     ) -> Option<BufferSlice<'static, I, H, E, G, C>>
     where
         G: marker::Marker,
-        C: AsBufferPool<I, H, E>,
+        C: AsBufferPool<'static, I, H, E>,
     {
         let (alloc_range, alloc_len, mmap_range, pointer, extra) = this
             .as_buffer_pool()
@@ -1559,16 +1562,19 @@ where
         }
     }
 
-    unsafe fn reclaim_slice_inner<G, C>(&self, slice: &BufferSlice<'_, I, H, E, G, C>)
+    unsafe fn reclaim_slice_inner<G, C>(&self, slice: &BufferSlice<'pool, I, H, E, G, C>)
     where
         G: marker::Marker,
-        C: AsBufferPool<I, H, E>,
+        C: AsBufferPool<'pool, I, H, E>,
     {
+        let freed_size = unsafe { self.deallocate_at::<G>(slice.alloc_start) };
+        assert_eq!(freed_size, slice.alloc_capacity);
+    }
+    /// Deallocates memory at the specified start offset in the pool,
+    /// returning the size of the freed space.
+    pub unsafe fn deallocate_at<G: marker::Marker>(&self, mut start: I) -> I {
         let mut occ_write_guard = self.occ_map.write();
         let mut free_write_guard = self.free_map.write();
-
-        let mut start = slice.alloc_start;
-        let mut size = slice.alloc_capacity;
 
         let occ_v = occ_write_guard
             .remove(&OccOffset::from_offset_used(start, true))
@@ -1576,7 +1582,7 @@ where
 
         let mmap_guard = self.mmap_map.read();
 
-        assert_eq!(occ_v.size(), slice.alloc_capacity);
+        let mut size = occ_v.size();
 
         while Self::remove_free_offset_below(
             &mut *free_write_guard,
@@ -1612,6 +1618,8 @@ where
 
         let old_occ_opt = occ_write_guard.insert(new_occ_k, new_occ_v);
         assert_eq!(old_occ_opt, None);
+
+        occ_v.size()
     }
     fn drop_impl(&mut self) {
         let count = self.guarded_occ_count.load(Ordering::Acquire);
@@ -1625,7 +1633,10 @@ where
                 });
             }
         } else {
-            log::warn!("Leaking parts of the buffer pool, since there were {} slices that were guarded by futures that haven't been completed", count);
+            log::warn!(
+                "Leaking parts of the buffer pool, since there were {} slices that were guarded by futures that haven't been completed",
+                count
+            );
         }
     }
     /// Returns the number of active guards that are used in the pool.
@@ -1636,7 +1647,7 @@ where
     }
 }
 
-impl<I: Integer, H: Handle<I, E>, E: Copy> Drop for BufferPool<I, H, E> {
+impl<'pool, I: Integer, H: Handle<I, E>, E: Copy> Drop for BufferPool<'pool, I, H, E> {
     fn drop(&mut self) {
         self.drop_impl();
     }
@@ -1868,7 +1879,7 @@ where
     I: Integer,
     H: Handle<I, E>,
     E: Copy,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     type Target = [u8];
 
@@ -1882,7 +1893,7 @@ where
     I: Integer,
     H: Handle<I, E>,
     E: Copy,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     fn borrow_guarded_mut(&mut self) -> &mut Self::Target {
         self.as_slice_mut()
@@ -1893,7 +1904,7 @@ where
     I: Integer,
     H: Handle<I, E>,
     E: Copy,
-    C: AsBufferPool<I, H, E>,
+    C: AsBufferPool<'pool, I, H, E>,
 {
     fn borrow_guarded_mut(&mut self) -> &mut Self::Target {
         self.as_slice_mut()
@@ -1904,12 +1915,13 @@ where
 mod tests {
     use super::*;
 
+    use rand::RngExt;
     use std::{mem, thread};
 
-    fn setup_pool(
+    fn setup_pool<'pool>(
         maps: impl IntoIterator<Item = Vec<u8>>,
         options: BufferPoolOptions<u32>,
-    ) -> (BufferPool<u32, NoHandle, ()>, u32) {
+    ) -> (BufferPool<'pool, u32, NoHandle, ()>, u32) {
         let pool = BufferPool::new(None);
         let mut total_size = 0;
 
@@ -1931,7 +1943,9 @@ mod tests {
         }
         (pool.with_options(options), total_size)
     }
-    fn setup_default_pool(options: BufferPoolOptions<u32>) -> (BufferPool<u32, NoHandle, ()>, u32) {
+    fn setup_default_pool<'pool>(
+        options: BufferPoolOptions<u32>,
+    ) -> (BufferPool<'pool, u32, NoHandle, ()>, u32) {
         setup_pool(
             vec![vec![0u8; 32768], vec![0u8; 4096], vec![0u8; 65536]],
             options,
@@ -1995,14 +2009,12 @@ mod tests {
         let threads = (0..THREAD_COUNT).map(|_| {
             let pool = Arc::clone(&pool);
             thread::spawn(move || {
-                use rand::Rng;
-
-                let mut thread_rng = rand::thread_rng();
+                let mut thread_rng = rand::rng();
 
                 for _ in 0..N {
                     'retry: loop {
-                        let len = thread_rng.gen_range(64..4096);
-                        let align = 1 << thread_rng.gen_range(0..3);
+                        let len = thread_rng.random_range(64..4096);
+                        let align = 1 << thread_rng.random_range(0..3);
                         match pool.acquire_borrowed_slice::<marker::NoGuard>(len, align, strategy) {
                             Some(_) => break 'retry,
                             None => continue 'retry,
@@ -2057,13 +2069,13 @@ mod tests {
         let options = BufferPoolOptions::default().with_minimum_alignment(1);
         let (pool, _) = setup_pool(vec![vec![0u8; 4096]], options);
 
-        fn get_and_check_slice(
-            pool: &BufferPool<u32, NoHandle, ()>,
+        fn get_and_check_slice<'a>(
+            pool: &'a BufferPool<'a, u32, NoHandle, ()>,
             size: u32,
             align: u32,
             fill_byte: u8,
             strategy: AllocationStrategy<u32>,
-        ) -> BufferSlice<u32, NoHandle, ()> {
+        ) -> BufferSlice<'a, u32, NoHandle, ()> {
             let mut slice = pool.acquire_borrowed_slice(size, align, strategy).unwrap();
             assert!(slice.iter().all(|&byte| byte == 0));
             slice.fill(fill_byte);
@@ -2100,21 +2112,19 @@ mod tests {
 
     #[test]
     fn fixed_allocations() {
-        use rand::Rng;
-
         let options = BufferPoolOptions::new().with_minimum_alignment(1);
         let (pool, _) = setup_pool(vec![vec![0u8; 4096]], options);
 
-        let mut thread_rng = rand::thread_rng();
+        let mut thread_rng = rand::rng();
 
         const N: usize = 1000;
 
         for _ in 0..N {
-            let alignment = 1 << thread_rng.gen_range(0..3);
-            let unaligned_offset = thread_rng.gen_range(0..2048 - alignment);
+            let alignment = 1 << thread_rng.random_range(0..3);
+            let unaligned_offset = thread_rng.random_range(0..2048 - alignment);
             let offset = (unaligned_offset + alignment - 1) / alignment * alignment;
 
-            let len = thread_rng.gen_range(0..2048 - offset);
+            let len = thread_rng.random_range(0..2048 - offset);
 
             if len == 0 {
                 continue;
